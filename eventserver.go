@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -15,7 +16,9 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
-var wsUpgrade = websocket.Upgrader{}
+var wsUpgrade = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 var pushCH = make(map[string]map[string]chan msg)
 var chlock sync.Mutex
