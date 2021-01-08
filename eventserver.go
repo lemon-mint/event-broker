@@ -1,19 +1,24 @@
 package main
 
 import (
+	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/lemon-mint/godotenv"
 )
 
 var wsUpgrade = websocket.Upgrader{
@@ -88,6 +93,69 @@ func eventlistener(c echo.Context) error {
 	return nil
 }
 
+var counter = make(map[string]int)
+
+type syncmsg struct {
+	NodeID    string `json:"nodeid"`
+	TimeStamp int    `json:"ts"`
+	Counter   int    `json:"counter"`
+	Ch        string `json:"ch"`
+	Type      string `json:"type"`
+	Nonce     string `json:"nonce"`
+	EventID   string `json:"id"`
+	HMAC      string `json:"hmac"`
+}
+
+func syncPoint(c echo.Context) error {
+	ws, err := wsUpgrade.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		return err
+	}
+
+	defer ws.Close()
+	for {
+		data := new(syncmsg)
+		err = ws.ReadJSON(data)
+		if err != nil {
+			fmt.Println(err)
+			c.Logger().Error(err)
+			break
+		}
+		signer := hmac.New(sha512.New384, []byte(os.Getenv("EVENTBROKER_SECRET_KEY")))
+		signer.Write(
+			[]byte(
+				data.NodeID + strconv.Itoa(data.TimeStamp) + strconv.Itoa(data.Counter) + data.Ch + data.Type + data.Nonce + data.EventID,
+			),
+		)
+		checkSum, err := base64.RawURLEncoding.DecodeString(data.HMAC)
+		if err != nil {
+			fmt.Println(err)
+			c.Logger().Error(err)
+			break
+		}
+		mac := signer.Sum(nil)
+		if bytes.Equal(mac, checkSum) {
+			prevCounter, ok := counter[data.NodeID]
+			if !ok {
+				counter[data.NodeID] = data.TimeStamp
+			}
+			if data.Counter > prevCounter {
+				counter[data.NodeID] = data.Counter
+				chHASH := sha256.Sum256([]byte(data.Ch))
+				chID := hex.EncodeToString(chHASH[:])
+				data := msg{
+					PacketType: "event",
+					TimeStamp:  data.TimeStamp,
+					EventID:    data.EventID,
+					EventType:  data.Type,
+				}
+				go send(chID, data)
+			}
+		}
+	}
+	return nil
+}
+
 func deployEvent(c echo.Context) error {
 	ch := c.Param("ch")
 	EventType := c.QueryParams().Get("type")
@@ -107,6 +175,7 @@ func deployEvent(c echo.Context) error {
 }
 
 func main() {
+	godotenv.Load()
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
