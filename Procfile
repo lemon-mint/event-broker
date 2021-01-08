@@ -1,0 +1,2 @@
+  
+web: bin/event-broker
