@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -109,5 +110,9 @@ func main() {
 	e.Static("/", "public")
 	e.GET("/event/:ch", deployEvent)
 	e.GET("/ws/:ch", eventlistener)
-	e.Logger.Fatal(e.Start(":1323"))
+	if os.Getenv("PORT_FROM_ENV") != "" {
+		e.Logger.Fatal(e.Start(":" + os.Getenv("PORT")))
+	} else {
+		e.Logger.Fatal(e.Start(":16745"))
+	}
 }
