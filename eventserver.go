@@ -187,7 +187,6 @@ func syncPoint(c echo.Context) error {
 }
 
 func sendSync(ch string, tosync msg) {
-	fmt.Println("sync")
 	hmacCounter++
 	data := syncmsg{
 		NodeID:    nodeID,
@@ -207,7 +206,6 @@ func sendSync(ch string, tosync msg) {
 	data.HMAC = base64.RawURLEncoding.EncodeToString(signer.Sum(nil))
 	for i := range syncConnetions {
 		syncConnetions[i].WriteJSON(data)
-		fmt.Println("SYNCED")
 	}
 }
 
@@ -227,7 +225,6 @@ func deployEvent(c echo.Context) error {
 	}
 	go send(chID, data)
 	go sendSync(chID, data)
-	fmt.Println("sync")
 	return c.JSON(200, data)
 }
 
