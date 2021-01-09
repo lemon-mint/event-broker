@@ -25,15 +25,17 @@ import (
 var syncServers []string
 var _ = func() int {
 	godotenv.Load()
-	i := 0
-	for {
-		serverURI := os.Getenv("EVENTBROKER_SYNC_SERVER_" + strconv.Itoa(i))
-		if serverURI != "" {
-			syncServers = append(syncServers, serverURI)
-		} else {
-			break
+	if os.Getenv("EVENTBROKER_SYNC") == "on" {
+		i := 0
+		for {
+			serverURI := os.Getenv("EVENTBROKER_SYNC_SERVER_" + strconv.Itoa(i))
+			if serverURI != "" {
+				syncServers = append(syncServers, serverURI)
+			} else {
+				break
+			}
+			i++
 		}
-		i++
 	}
 	return 0
 }()
@@ -235,7 +237,9 @@ func main() {
 	e.Static("/", "public")
 	e.GET("/event/:ch", deployEvent)
 	e.GET("/ws/:ch", eventlistener)
-	e.GET("/sync/syncpoint", syncPoint)
+	if os.Getenv("EVENTBROKER_SYNC") == "on" {
+		e.GET("/sync/syncpoint", syncPoint)
+	}
 	go func() {
 		time.Sleep(time.Second * 5)
 		for i := range syncServers {
