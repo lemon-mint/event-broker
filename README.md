@@ -1,5 +1,5 @@
 # event-broker
-Server-side push server based on websocket
+high performance event delivery server based on WebSockets.
 # Features
 
 - WebSocket-based subscription
