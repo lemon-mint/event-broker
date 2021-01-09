@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -20,6 +21,25 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/lemon-mint/godotenv"
 )
+
+var syncServers []string
+var _ = func() int {
+	godotenv.Load()
+	i := 0
+	for {
+		serverURI := os.Getenv("EVENTBROKER_SYNC_SERVER_" + strconv.Itoa(i))
+		if serverURI != "" {
+			syncServers = append(syncServers, serverURI)
+		} else {
+			break
+		}
+		i++
+	}
+	return 0
+}()
+var syncConnetions = []*websocket.Conn{}
+var hmacCounter = 0
+var nodeID = randURLSafe(32)
 
 var wsUpgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -43,7 +63,7 @@ func send(ch string, data msg) {
 func getCH(ch string) (string, chan msg) {
 	chlock.Lock()
 	defer chlock.Unlock()
-	NewCH := make(chan msg)
+	NewCH := make(chan msg, 10)
 	_, ok := pushCH[ch]
 	if !ok {
 		pushCH[ch] = make(map[string]chan msg)
@@ -54,6 +74,8 @@ func getCH(ch string) (string, chan msg) {
 }
 
 func delCH(ch string, sessionID string) {
+	chlock.Lock()
+	defer chlock.Unlock()
 	delete(pushCH[ch], sessionID)
 }
 
@@ -82,11 +104,21 @@ func eventlistener(c echo.Context) error {
 	sessionID, pipe := getCH(ch)
 	defer delCH(ch, sessionID)
 
+	ws.SetCloseHandler(func(code int, text string) error {
+		close(pipe)
+		return nil
+	})
+
 	for {
-		err := ws.WriteJSON(<-pipe)
-		if err != nil {
-			fmt.Println(err)
-			c.Logger().Error(err)
+		value, ok := <-pipe
+		if ok {
+			err := ws.WriteJSON(value)
+			if err != nil {
+				fmt.Println(err)
+				c.Logger().Error(err)
+				break
+			}
+		} else {
 			break
 		}
 	}
@@ -141,19 +173,42 @@ func syncPoint(c echo.Context) error {
 			}
 			if data.Counter > prevCounter {
 				counter[data.NodeID] = data.Counter
-				chHASH := sha256.Sum256([]byte(data.Ch))
-				chID := hex.EncodeToString(chHASH[:])
-				data := msg{
+				dataMsg := msg{
 					PacketType: "event",
 					TimeStamp:  data.TimeStamp,
 					EventID:    data.EventID,
 					EventType:  data.Type,
 				}
-				go send(chID, data)
+				go send(data.Ch, dataMsg)
 			}
 		}
 	}
 	return nil
+}
+
+func sendSync(ch string, tosync msg) {
+	fmt.Println("sync")
+	hmacCounter++
+	data := syncmsg{
+		NodeID:    nodeID,
+		TimeStamp: tosync.TimeStamp,
+		Counter:   int(time.Now().UTC().Unix()) + hmacCounter,
+		Ch:        ch,
+		Type:      tosync.EventType,
+		Nonce:     randURLSafe(16),
+		EventID:   tosync.EventID,
+	}
+	signer := hmac.New(sha512.New384, []byte(os.Getenv("EVENTBROKER_SECRET_KEY")))
+	signer.Write(
+		[]byte(
+			data.NodeID + strconv.Itoa(data.TimeStamp) + strconv.Itoa(data.Counter) + data.Ch + data.Type + data.Nonce + data.EventID,
+		),
+	)
+	data.HMAC = base64.RawURLEncoding.EncodeToString(signer.Sum(nil))
+	for i := range syncConnetions {
+		syncConnetions[i].WriteJSON(data)
+		fmt.Println("SYNCED")
+	}
 }
 
 func deployEvent(c echo.Context) error {
@@ -171,17 +226,34 @@ func deployEvent(c echo.Context) error {
 		EventType:  EventType,
 	}
 	go send(chID, data)
+	go sendSync(chID, data)
+	fmt.Println("sync")
 	return c.JSON(200, data)
 }
 
 func main() {
-	godotenv.Load()
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Static("/", "public")
 	e.GET("/event/:ch", deployEvent)
 	e.GET("/ws/:ch", eventlistener)
+	e.GET("/sync/syncpoint", syncPoint)
+	go func() {
+		time.Sleep(time.Second * 5)
+		for i := range syncServers {
+			u, err := url.Parse(syncServers[i])
+			if err == nil {
+				c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+				if err != nil {
+					fmt.Println(err)
+				}
+				if err == nil {
+					syncConnetions = append(syncConnetions, c)
+				}
+			}
+		}
+	}()
 	if os.Getenv("PORT_FROM_ENV") != "" {
 		e.Logger.Fatal(e.Start(":" + os.Getenv("PORT")))
 	} else {
