@@ -43,6 +43,8 @@ var syncConnetions = []*websocket.Conn{}
 var hmacCounter = 0
 var nodeID = randURLSafe(32)
 
+var syncLock sync.Mutex
+
 var wsUpgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -130,6 +132,7 @@ func eventlistener(c echo.Context) error {
 var counter = make(map[string]int)
 
 type syncmsg struct {
+	MsgType   string `json:"msgtype"`
 	NodeID    string `json:"nodeid"`
 	TimeStamp int    `json:"ts"`
 	Counter   int    `json:"counter"`
@@ -155,33 +158,35 @@ func syncPoint(c echo.Context) error {
 			c.Logger().Error(err)
 			break
 		}
-		signer := hmac.New(sha512.New384, []byte(os.Getenv("EVENTBROKER_SECRET_KEY")))
-		signer.Write(
-			[]byte(
-				data.NodeID + strconv.Itoa(data.TimeStamp) + strconv.Itoa(data.Counter) + data.Ch + data.Type + data.Nonce + data.EventID,
-			),
-		)
-		checkSum, err := base64.RawURLEncoding.DecodeString(data.HMAC)
-		if err != nil {
-			fmt.Println(err)
-			c.Logger().Error(err)
-			break
-		}
-		mac := signer.Sum(nil)
-		if bytes.Equal(mac, checkSum) {
-			prevCounter, ok := counter[data.NodeID]
-			if !ok {
-				counter[data.NodeID] = data.TimeStamp
+		if data.MsgType == "event" {
+			signer := hmac.New(sha512.New384, []byte(os.Getenv("EVENTBROKER_SECRET_KEY")))
+			signer.Write(
+				[]byte(
+					data.NodeID + strconv.Itoa(data.TimeStamp) + strconv.Itoa(data.Counter) + data.Ch + data.Type + data.Nonce + data.EventID,
+				),
+			)
+			checkSum, err := base64.RawURLEncoding.DecodeString(data.HMAC)
+			if err != nil {
+				fmt.Println(err)
+				c.Logger().Error(err)
+				break
 			}
-			if data.Counter > prevCounter {
-				counter[data.NodeID] = data.Counter
-				dataMsg := msg{
-					PacketType: "event",
-					TimeStamp:  data.TimeStamp,
-					EventID:    data.EventID,
-					EventType:  data.Type,
+			mac := signer.Sum(nil)
+			if bytes.Equal(mac, checkSum) {
+				prevCounter, ok := counter[data.NodeID]
+				if !ok {
+					counter[data.NodeID] = data.TimeStamp
 				}
-				go send(data.Ch, dataMsg)
+				if data.Counter > prevCounter {
+					counter[data.NodeID] = data.Counter
+					dataMsg := msg{
+						PacketType: "event",
+						TimeStamp:  data.TimeStamp,
+						EventID:    data.EventID,
+						EventType:  data.Type,
+					}
+					go send(data.Ch, dataMsg)
+				}
 			}
 		}
 	}
@@ -191,6 +196,7 @@ func syncPoint(c echo.Context) error {
 func sendSync(ch string, tosync msg) {
 	hmacCounter++
 	data := syncmsg{
+		MsgType:   "event",
 		NodeID:    nodeID,
 		TimeStamp: tosync.TimeStamp,
 		Counter:   int(time.Now().UTC().Unix()) + hmacCounter,
@@ -206,8 +212,24 @@ func sendSync(ch string, tosync msg) {
 		),
 	)
 	data.HMAC = base64.RawURLEncoding.EncodeToString(signer.Sum(nil))
+	syncLock.Lock()
 	for i := range syncConnetions {
 		syncConnetions[i].WriteJSON(data)
+	}
+	syncLock.Unlock()
+}
+
+func syncHeartbeat() {
+	for {
+		data := syncmsg{
+			MsgType: "heartbeat",
+		}
+		time.Sleep(time.Second * 15)
+		syncLock.Lock()
+		for i := range syncConnetions {
+			syncConnetions[i].WriteJSON(data)
+		}
+		syncLock.Unlock()
 	}
 }
 
@@ -230,6 +252,37 @@ func deployEvent(c echo.Context) error {
 	return c.JSON(200, data)
 }
 
+var isReconnecting = false
+
+func connectToSyncServer() {
+	syncLock.Lock()
+	for i := range syncConnetions {
+		syncConnetions[i].Close()
+	}
+	syncConnetions = []*websocket.Conn{}
+	for i := range syncServers {
+		u, err := url.Parse(syncServers[i])
+		if err == nil {
+			c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+			if err != nil {
+				fmt.Println(err)
+			}
+			c.SetCloseHandler(func(code int, text string) error {
+				if !isReconnecting {
+					isReconnecting = true
+					connectToSyncServer()
+					isReconnecting = false
+				}
+				return nil
+			})
+			if err == nil {
+				syncConnetions = append(syncConnetions, c)
+			}
+		}
+	}
+	syncLock.Unlock()
+}
+
 func main() {
 	e := echo.New()
 	e.Use(middleware.Logger())
@@ -242,19 +295,10 @@ func main() {
 	}
 	go func() {
 		time.Sleep(time.Second * 5)
-		for i := range syncServers {
-			u, err := url.Parse(syncServers[i])
-			if err == nil {
-				c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-				if err != nil {
-					fmt.Println(err)
-				}
-				if err == nil {
-					syncConnetions = append(syncConnetions, c)
-				}
-			}
-		}
+		connectToSyncServer()
+		syncHeartbeat()
 	}()
+
 	if os.Getenv("PORT_FROM_ENV") != "" {
 		e.Logger.Fatal(e.Start(":" + os.Getenv("PORT")))
 	} else {
