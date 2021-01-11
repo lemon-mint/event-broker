@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -103,15 +104,48 @@ func eventlistener(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	defer ws.Close()
 
 	sessionID, pipe := getCH(ch)
 	defer delCH(ch, sessionID)
 
+	defer ws.Close()
+
+	var HeartBeatLock sync.Mutex
+	var HeartBeatState bool = true
+
 	ws.SetCloseHandler(func(code int, text string) error {
+		HeartBeatLock.Lock()
+		HeartBeatState = false
+		HeartBeatLock.Unlock()
 		close(pipe)
 		return nil
 	})
+
+	defer func() {
+		HeartBeatLock.Lock()
+		HeartBeatState = false
+		HeartBeatLock.Unlock()
+	}()
+
+	go func() {
+		for {
+			HeartBeatLock.Lock()
+			state := HeartBeatState
+			if state {
+				select {
+				case pipe <- msg{
+					PacketType: "heartbeat",
+				}:
+				default:
+					//Chan is full
+				}
+			} else {
+				return
+			}
+			HeartBeatLock.Unlock()
+			time.Sleep(time.Second * 15)
+		}
+	}()
 
 	for {
 		value, ok := <-pipe
@@ -290,6 +324,49 @@ func main() {
 	e.Static("/", "public")
 	e.GET("/event/:ch", deployEvent)
 	e.GET("/ws/:ch", eventlistener)
+
+	e.GET("/hc", func(c echo.Context) error {
+		return c.String(200, "OK")
+	})
+
+	admin := e.Group("/admin")
+	admin.Use(middleware.BasicAuth(
+		func(username, pw string, c echo.Context) (bool, error) {
+			t := sha512.Sum384([]byte(username + pw + os.Getenv("EVENT_BROKER_ADMIN_SALT")))
+			for i := 0; i < 2000; i++ {
+				t = sha512.Sum384(t[:])
+			}
+			adminPW, err := hex.DecodeString(os.Getenv("EVENT_BROKER_ADMIN_PW"))
+			if err != nil {
+				return false, err
+			}
+			if subtle.ConstantTimeCompare(t[:], adminPW) != 1 {
+				return false, nil
+			}
+			if username != os.Getenv("EVENT_BROKER_ADMIN_ID") {
+				return false, nil
+			}
+			return true, nil
+		},
+	))
+	admin.GET("/connections", func(c echo.Context) error {
+		activeConnections := 0
+		channels := 0
+		chlock.Lock()
+		for key := range pushCH {
+			channels++
+			activeConnections += len(pushCH[key])
+		}
+		chlock.Unlock()
+		return c.JSONPretty(200, struct {
+			Channels    int `json:"channels"`
+			Connections int `json:"connections"`
+		}{
+			Channels:    channels,
+			Connections: activeConnections,
+		}, "    ")
+	})
+
 	if os.Getenv("EVENTBROKER_SYNC") == "on" {
 		e.GET("/sync/syncpoint", syncPoint)
 	}
