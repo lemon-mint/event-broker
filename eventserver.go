@@ -367,6 +367,19 @@ func main() {
 		}, "    ")
 	})
 
+	admin.GET("/syncstates", func(c echo.Context) error {
+		syncLock.Lock()
+		connections := len(syncConnetions)
+		syncLock.Unlock()
+		return c.JSONPretty(200, struct {
+			Servers     []string `json:"servers"`
+			Connections int      `json:"connections"`
+		}{
+			Servers:     syncServers,
+			Connections: connections,
+		}, "    ")
+	})
+
 	if os.Getenv("EVENTBROKER_SYNC") == "on" {
 		e.GET("/sync/syncpoint", syncPoint)
 	}
