@@ -10,6 +10,8 @@ jobs:
     buildx:
         runs-on: ubuntu-latest
         steps:
+            - name: Set env
+              run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
             - name: Set up QEMU
               uses: docker/setup-qemu-action@v1
             - name: Set up Docker Buildx
@@ -22,8 +24,8 @@ jobs:
               with:
                   platforms: linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64
                   push: true
-                  tags: ghcr.io/lemon-mint/event-broker:${{GITHUB_REF#refs/tags/}}
+                  tags: ghcr.io/lemon-mint/event-broker:${{ env.RELEASE_VERSION }}
             - name: Tag latest
-              run: docker image tag ghcr.io/lemon-mint/event-broker:${{GITHUB_REF#refs/tags/}} ghcr.io/lemon-mint/event-broker:latest
+              run: docker image tag ghcr.io/lemon-mint/event-broker:${{ env.RELEASE_VERSION }} ghcr.io/lemon-mint/event-broker:latest
             - name: Push latest
               run: docker image push ghcr.io/lemon-mint/event-broker:latest
