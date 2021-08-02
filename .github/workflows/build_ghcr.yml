@@ -17,7 +17,7 @@ jobs:
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v1
             - name: Login to Github
-              run: echo ${{ secrets.GHCR_KEY }} | docker login https://ghcr.io -u outsideris --password-stdin
+              run: echo ${{ secrets.GITHUB_TOKEN }} | docker login https://ghcr.io -u outsideris --password-stdin
             - name: Build and Push
               id: docker_build
               uses: docker/build-push-action@v2
