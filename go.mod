@@ -1,7 +1,7 @@
 module github.com/lemon-mint/event-broker
 
 // +heroku goVersion go1.15
-go 1.15
+go 1.18
 
 require (
 	github.com/gorilla/websocket v1.5.0
